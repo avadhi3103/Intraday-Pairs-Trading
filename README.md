@@ -194,3 +194,7 @@ other two. That is not a consistent improvement.
 - Johansen test for multi-asset baskets; Kalman-filter dynamic hedge ratios
 - Stop-loss on |z| or on time-in-trade; Student-t GARCH errors; intraday seasonality adjustment of volatility
 - Threshold optimisation with a separate validation period (to avoid overfitting the 44-day sample)
+
+## License
+
+Released under the [MIT License](LICENSE). This is a research and learning project, not investment advice.
