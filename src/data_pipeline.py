@@ -73,6 +73,14 @@ def fetch_ticker(ticker: str, refresh: bool = False) -> pd.DataFrame:
     if path.exists() and not refresh:
         return pd.read_parquet(path)
 
+    df = download_ticker(ticker)
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(path)
+    return df
+
+
+def download_ticker(ticker: str) -> pd.DataFrame:
+    """Download the latest bars from yfinance without touching the parquet cache."""
     df = yf.download(
         ticker,
         period=HISTORY_PERIOD,
@@ -83,9 +91,6 @@ def fetch_ticker(ticker: str, refresh: bool = False) -> pd.DataFrame:
     )
     if df.empty:
         raise ValueError(f"No data returned for {ticker}")
-
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path)
     return df
 
 
