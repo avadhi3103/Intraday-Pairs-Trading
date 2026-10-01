@@ -17,6 +17,24 @@ advanced methods are deliberately left out.
 
 ---
 
+## Interactive simulator (web app)
+
+`app.py` is a Streamlit app that runs the same engine in a browser:
+
+- **Pair test:** hedge ratio, ADF vs Engle-Granger p-values, half-life, spread chart
+- **Simulation replay:** pick a day and step (or ▶ play) through it bar by bar. It shows prices, z-score,
+  thresholds, entries and exits, intraday P&L, and a plain-English account of what the engine does on each bar
+  (mark to market → fill → decide)
+- **Results & costs:** fixed vs GARCH vs buy & hold, equity and drawdown, round-trip cost breakdown, slippage sweep
+- **GARCH:** parameter evolution and adaptive thresholds
+- Sidebar: choose a preset or any custom NSE pair, and change thresholds, windows, notional and slippage
+
+```bash
+streamlit run app.py
+```
+
+It downloads the latest ~60 days from Yahoo Finance when opened, so no data is stored in the repo.
+
 ## Project structure
 
 ```
@@ -30,6 +48,7 @@ src/
   costs.py                 Phase 3: NSE intraday cost model
   garch_thresholds.py      Phase 4: rolling ARCH/GARCH fits, adaptive thresholds, parameter plots
   backtest_report.py       shared metrics, comparison tables, plots (used by every phase)
+app.py                     interactive Streamlit simulator
 notebooks/
   01_pair_selection.ipynb
   02_baseline_strategy.ipynb

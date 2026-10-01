@@ -3,3 +3,4 @@ __pycache__/
 .ipynb_checkpoints/
 # Yahoo Finance data is not redistributed; it is downloaded and cached on first run
 data/
+.claude/
