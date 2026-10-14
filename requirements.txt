@@ -1,6 +1,6 @@
 pandas>=2.2
 numpy>=1.26
-statsmodels>=0.14
+statsmodels>=0.15        # adfuller(result_object=...) needs 0.15+
 arch>=7.0
 matplotlib>=3.8
 pyarrow>=15

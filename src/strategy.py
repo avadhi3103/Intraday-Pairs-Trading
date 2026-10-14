@@ -64,6 +64,30 @@ EOD_EXIT_TIME = "15:05"            # signal to flatten at 15:05; with a 1-bar la
 
 BARS_PER_DAY = 75
 
+# ---------------------------------------------------------------------------
+# Experiment switches (Wave 2). Defaults reproduce the original Phase 2 strategy exactly.
+# ---------------------------------------------------------------------------
+# How the z-score window treats the overnight gap:
+#   "rolling":     the 60-bar window runs across days. At 09:15 it holds 59 bars from
+#                  yesterday and 1 from today, so z mostly measures the overnight gap.
+#   "reset_daily": the window starts fresh at the open and uses today's bars only.
+ZSCORE_WINDOW_MODE = "rolling"
+
+# With a reset window, the first few bars have almost no history. A std estimated from n
+# points has a relative standard error of about 1/sqrt(2(n-1)): 0.71 at n=2, 0.16 at n=20,
+# 0.09 at n=60. We wait for 20 bars (100 minutes) before trusting the z-score.
+ZSCORE_MIN_BARS_RESET = 20
+
+# Entry gates and exits. 0 / None = off.
+#   MIN_BARS_INTO_DAY: no entries until this many of today's bars have printed.
+#       ZSCORE_WINDOW - 1 means "only once the whole window is inside today".
+#   MIN_BARS_LEFT: no entries unless at least this many bars remain before the 15:05
+#       flatten. Set it to k x half-life to turn the Phase 1 half-life into a rule.
+#   MAX_HOLDING_BARS: time stop, close a trade after this many bars even if z hasn't reverted.
+MIN_BARS_INTO_DAY = 0
+MIN_BARS_LEFT = 0
+MAX_HOLDING_BARS = None
+
 
 # ---------------------------------------------------------------------------
 # Walk-forward hedge ratio, spread and z-score
@@ -75,7 +99,9 @@ def ols_beta(price_a: pd.Series, price_b: pd.Series) -> float:
 
 def build_signals(prices: pd.DataFrame, trade_start=None,
                   zscore_window: int = ZSCORE_WINDOW,
-                  hedge_lookback_days: int = HEDGE_LOOKBACK_DAYS) -> pd.DataFrame:
+                  hedge_lookback_days: int = HEDGE_LOOKBACK_DAYS,
+                  window_mode: str = ZSCORE_WINDOW_MODE,
+                  min_bars_reset: int = ZSCORE_MIN_BARS_RESET) -> pd.DataFrame:
     """Compute beta_t, spread_t and z_t for every bar in the trading period.
 
     prices: two columns [A, B] covering formation + trading periods. The formation
@@ -87,9 +113,14 @@ def build_signals(prices: pd.DataFrame, trade_start=None,
       beta_d   = OLS slope on the previous `hedge_lookback_days` days (strictly before d)
       spread_t = A_t - beta_d * B_t
       z_t      = (spread_t - mean(spread over last W bars)) / std(spread over last W bars)
-    The rolling window for the first bars of day d reaches back into previous days.
-    We recompute those earlier spreads with beta_d so that every bar in the window is
-    measured in the same units.
+    window_mode="rolling": the window for the first bars of day d reaches back into
+    previous days. We recompute those earlier spreads with beta_d so that every bar in the
+    window is measured in the same units.
+    window_mode="reset_daily": the window uses today's bars only (an expanding window until
+    it reaches `zscore_window` bars), and z is NaN for the first `min_bars_reset` bars.
+
+    Extra columns: bars_into_day (0 at the first bar of the day, counted from bars actually
+    received, so it's known at time t) and today_bars_in_window.
     """
     a_col, b_col = prices.columns[:2]
     days = prices.index.normalize().unique()
@@ -106,12 +137,19 @@ def build_signals(prices: pd.DataFrame, trade_start=None,
         beta = ols_beta(hist[a_col], hist[b_col])
 
         today = prices[prices.index.normalize() == d]
-        # warm-up: the last (W-1) bars before today, so the first bar of today has a full window
-        warm = prices[prices.index < d].iloc[-(zscore_window - 1):]
-        window_px = pd.concat([warm, today])
+        if window_mode == "rolling":
+            # warm-up: the last (W-1) bars before today, so the first bar of today has a full window
+            warm = prices[prices.index < d].iloc[-(zscore_window - 1):]
+            window_px = pd.concat([warm, today])
+            min_periods = zscore_window
+        elif window_mode == "reset_daily":
+            window_px = today
+            min_periods = min_bars_reset
+        else:
+            raise ValueError(f"unknown window_mode: {window_mode}")
         spread = window_px[a_col] - beta * window_px[b_col]
-        mean = spread.rolling(zscore_window).mean()
-        std = spread.rolling(zscore_window).std()
+        mean = spread.rolling(zscore_window, min_periods=min_periods).mean()
+        std = spread.rolling(zscore_window, min_periods=min_periods).std()
         z = (spread - mean) / std
 
         block = today.copy()
@@ -120,6 +158,8 @@ def build_signals(prices: pd.DataFrame, trade_start=None,
         block["spread_mean"] = mean.loc[today.index]
         block["spread_std"] = std.loc[today.index]
         block["zscore"] = z.loc[today.index]
+        block["bars_into_day"] = np.arange(len(today))
+        block["today_bars_in_window"] = np.minimum(block["bars_into_day"] + 1, zscore_window)
         blocks.append(block)
 
     return pd.concat(blocks)
@@ -153,6 +193,9 @@ def run_backtest(sig: pd.DataFrame,
                  notional_per_leg: float = NOTIONAL_PER_LEG,
                  sizing_mode: str = SIZING_MODE,
                  execution_lag: int = EXECUTION_LAG_BARS,
+                 min_bars_into_day: int = MIN_BARS_INTO_DAY,
+                 min_bars_left: float = MIN_BARS_LEFT,
+                 max_holding_bars: int = MAX_HOLDING_BARS,
                  label: str = "z-score") -> BacktestResult:
     """Bar-by-bar event loop. Written as an explicit loop (not vectorised) so every
     decision can be read in order: mark-to-market -> fill pending order -> new signal.
@@ -164,6 +207,7 @@ def run_backtest(sig: pd.DataFrame,
       flat  and z > +entry -> go short spread  (spread unusually HIGH, bet it falls)
       long  and z >= -exit -> close            (spread has reverted)
       short and z <= +exit -> close
+    Optional gates (see the CONFIG switches): min_bars_into_day, min_bars_left, max_holding_bars.
     """
     a_col, b_col = sig.columns[:2]
     idx = sig.index
@@ -176,6 +220,16 @@ def run_backtest(sig: pd.DataFrame,
     times = idx.strftime("%H:%M")
     dates = idx.normalize()
     last_bar_of_day = np.r_[dates[1:] != dates[:-1], True]
+
+    # Entry gates. Bars left is measured on the CLOCK (minutes to the 15:05 flatten / 5),
+    # not by counting the bars still to come, which would peek at future missing bars.
+    if "bars_into_day" in sig:
+        bars_into_day = sig["bars_into_day"].values
+    else:
+        bars_into_day = pd.Series(1, index=idx).groupby(dates).cumcount().values
+    eod_h, eod_m = map(int, EOD_EXIT_TIME.split(":"))
+    bars_left = ((eod_h * 60 + eod_m) - (idx.hour * 60 + idx.minute)).values / 5
+    entry_allowed = (bars_into_day >= min_bars_into_day) & (bars_left >= min_bars_left)
 
     equity = np.empty(len(idx))
     position = np.zeros(len(idx), dtype=int)
@@ -211,7 +265,8 @@ def run_backtest(sig: pd.DataFrame,
                 open_cost += cost_model(n_a * pa[i], "buy" if sh_a > 0 else "sell")
                 open_cost += cost_model(n_b * pb[i], "buy" if sh_b > 0 else "sell")
             cost += open_cost
-            open_trade = dict(entry_time=idx[i], entry_idx=i, direction=new_pos,
+            open_trade = dict(signal_time=idx[max(i - execution_lag, 0)],
+                              entry_time=idx[i], entry_idx=i, direction=new_pos,
                               shares_a=sh_a, shares_b=sh_b, entry_a=pa[i], entry_b=pb[i],
                               entry_z=z[i - execution_lag] if i >= execution_lag else z[i],
                               costs=open_cost)
@@ -238,11 +293,14 @@ def run_backtest(sig: pd.DataFrame,
         else:
             # 4) decide the target position using information up to bar i only
             new_target, reason = pos, "signal"
-            if np.isnan(z[i]):
-                pass
-            elif times[i] >= EOD_EXIT_TIME:
+            if times[i] >= EOD_EXIT_TIME:
                 new_target, reason = 0, "eod"
-            elif pos == 0 and times[i] < NO_NEW_ENTRY_AFTER:
+            elif (pos != 0 and max_holding_bars is not None
+                  and i - open_trade["entry_idx"] >= max_holding_bars):
+                new_target, reason = 0, "time_stop"
+            elif np.isnan(z[i]):
+                pass
+            elif pos == 0 and times[i] < NO_NEW_ENTRY_AFTER and entry_allowed[i]:
                 if z[i] < -entry[i]:
                     new_target = 1
                 elif z[i] > entry[i]:
