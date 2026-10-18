@@ -1,6 +1,6 @@
 # Q5 results vs the pre-registered predictions
 
-Predictions: [`q5_predictions.md`](q5_predictions.md), committed and pushed (commit `6e448a4`)
+Predictions: [`q5_predictions.md`](q5_predictions.md), committed and pushed (commit `0536eb0`)
 before the experiment ran. Full analysis: [`notebooks/05_diagnostics.ipynb`](../notebooks/05_diagnostics.ipynb), section 5.
 
 Same data, betas, thresholds and NSE cost model for every variant; only the treatment of the
