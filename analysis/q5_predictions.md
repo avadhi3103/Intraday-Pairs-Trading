@@ -1,5 +1,5 @@
 # Q5 predictions, written before running (date: 18 Oct 2026)
-# Author: Help with Claude (AI assistant)
+# Author: avadhi3103
 
 Baseline (a), already known, on SBIN/BANKBARODA: 59 trades, gross +1.29%, net −3.70%,
 gross Sharpe 0.26, about half of all entries in the first 30 minutes.
